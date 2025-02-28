@@ -1,25 +1,7 @@
 import { useState, useEffect, useContext, createContext, useMemo } from 'react';
-import {
-  signInWithPopup,
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  signOut as signOutFirebase
-} from 'firebase/auth';
-import {
-  doc,
-  getDoc,
-  setDoc,
-  onSnapshot,
-  serverTimestamp
-} from 'firebase/firestore';
-import { auth } from '@lib/firebase/app';
-import {
-  usersCollection,
-  userStatsCollection,
-  userBookmarksCollection
-} from '@lib/firebase/collections';
 import { getRandomId, getRandomInt } from '@lib/random';
-import { checkUsernameAvailability } from '@lib/firebase/utils';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import type { ReactNode } from 'react';
 import type { User as AuthUser } from 'firebase/auth';
 import type { WithFieldValue } from 'firebase/firestore';
@@ -35,7 +17,7 @@ type AuthContext = {
   randomSeed: string;
   userBookmarks: Bookmark[] | null;
   signOut: () => Promise<void>;
-  signInWithGoogle: () => Promise<void>;
+  connectWallet: () => Promise<void>;
 };
 
 export const AuthContext = createContext<AuthContext | null>(null);
@@ -52,87 +34,36 @@ export function AuthContextProvider({
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const { publicKey, connect, disconnect } = useWallet();
+
+  const connectWallet = async (): Promise<void> => {
+    try {
+      await connect();
+      const walletAddress = publicKey?.toBase58();
+      console.log('Connected wallet:', walletAddress);
+    } catch (error) {
+      setError(error as Error);
+    }
+  };
+
+  const disconnectWallet = async (): Promise<void> => {
+    try {
+      await disconnect();
+      console.log('Wallet disconnected');
+    } catch (error) {
+      setError(error as Error);
+    }
+  };
+
   useEffect(() => {
-    const manageUser = async (authUser: AuthUser): Promise<void> => {
-      const { uid, displayName, photoURL } = authUser;
-
-      const userSnapshot = await getDoc(doc(usersCollection, uid));
-
-      if (!userSnapshot.exists()) {
-        let available = false;
-        let randomUsername = '';
-
-        while (!available) {
-          const normalizeName = displayName?.replace(/\s/g, '').toLowerCase();
-          const randomInt = getRandomInt(1, 10_000);
-
-          randomUsername = `${normalizeName as string}${randomInt}`;
-
-          const isUsernameAvailable = await checkUsernameAvailability(
-            randomUsername
-          );
-
-          if (isUsernameAvailable) available = true;
-        }
-
-        const userData: WithFieldValue<User> = {
-          id: uid,
-          bio: null,
-          name: displayName as string,
-          theme: null,
-          accent: null,
-          website: null,
-          location: null,
-          photoURL: photoURL ?? '/assets/twitter-avatar.jpg',
-          username: randomUsername,
-          verified: false,
-          following: [],
-          followers: [],
-          createdAt: serverTimestamp(),
-          updatedAt: null,
-          totalTweets: 0,
-          totalPhotos: 0,
-          pinnedTweet: null,
-          coverPhotoURL: null
-        };
-
-        const userStatsData: WithFieldValue<Stats> = {
-          likes: [],
-          tweets: [],
-          updatedAt: null
-        };
-
-        try {
-          await Promise.all([
-            setDoc(doc(usersCollection, uid), userData),
-            setDoc(doc(userStatsCollection(uid), 'stats'), userStatsData)
-          ]);
-
-          const newUser = (await getDoc(doc(usersCollection, uid))).data();
-          setUser(newUser as User);
-        } catch (error) {
-          setError(error as Error);
-        }
-      } else {
-        const userData = userSnapshot.data();
-        setUser(userData);
-      }
-
-      setLoading(false);
-    };
-
-    const handleUserAuth = (authUser: AuthUser | null): void => {
-      setLoading(true);
-
-      if (authUser) void manageUser(authUser);
-      else {
-        setUser(null);
-        setLoading(false);
-      }
-    };
-
-    onAuthStateChanged(auth, handleUserAuth);
-  }, []);
+    if (publicKey) {
+      setUser({
+        id: publicKey.toBase58(),
+        username: publicKey.toBase58().slice(0, 10), // Temporary username
+        photoURL: '/assets/twitter-avatar.jpg'
+      });
+    }
+  }, [publicKey]);
 
   useEffect(() => {
     if (!user) return;
@@ -158,23 +89,6 @@ export function AuthContextProvider({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  const signInWithGoogle = async (): Promise<void> => {
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      setError(error as Error);
-    }
-  };
-
-  const signOut = async (): Promise<void> => {
-    try {
-      await signOutFirebase(auth);
-    } catch (error) {
-      setError(error as Error);
-    }
-  };
-
   const isAdmin = user ? user.username === 'ccrsxx' : false;
   const randomSeed = useMemo(getRandomId, [user?.id]);
 
@@ -185,8 +99,8 @@ export function AuthContextProvider({
     isAdmin,
     randomSeed,
     userBookmarks,
-    signOut,
-    signInWithGoogle
+    signOut: disconnectWallet, // Replaced signOut with disconnectWallet
+    connectWallet // Replaced signInWithGoogle with connectWallet
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
